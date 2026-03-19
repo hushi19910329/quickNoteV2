@@ -1,0 +1,20 @@
+QWidget {
+  background: #f5f6f8;
+  color: #1f2937;
+  font-size: 13px;
+}
+
+QPushButton {
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 2px 10px;
+  min-height: 25px;
+}
+
+QLineEdit, QTextEdit, QListWidget {
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
