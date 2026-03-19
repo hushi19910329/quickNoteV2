@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from src.models.note import Note
+from src.models.tag import Tag
 from src.services.note_service import NoteService
 from src.services.search_service import SearchService
 
@@ -35,8 +36,28 @@ class NoteController:
             note_id, color=color, emoji_icon=emoji_icon
         )
 
-    def on_search(self, keyword: str) -> list[Note]:
-        return self._search_service.search_notes(keyword)
+    def on_search(
+        self, keyword: str, *, archived: bool = False, tag_ids: list[int] | None = None
+    ) -> list[Note]:
+        return self._search_service.search_notes(
+            keyword, archived=archived, tag_ids=tag_ids
+        )
 
-    def list_notes(self, archived: bool = False) -> list[Note]:
-        return self._note_service.list_notes(archived=archived)
+    def list_notes(self, archived: bool = False, tag_ids: list[int] | None = None) -> list[Note]:
+        return self._note_service.list_notes(archived=archived, tag_ids=tag_ids)
+
+    def list_tags(self) -> list[Tag]:
+        return self._note_service.list_tags()
+
+    def on_create_tag(self, name: str, color: str = "#4A90E2") -> Tag | None:
+        return self._note_service.create_tag(name=name, color=color)
+
+    def on_delete_tag(self, tag_id: int) -> None:
+        self._note_service.delete_tag(tag_id)
+
+    def get_note_tag_ids(self, note_id: int) -> list[int]:
+        return self._note_service.get_note_tag_ids(note_id)
+
+    def on_set_note_tags(self, note_id: int, tag_ids: list[int]) -> None:
+        self._note_service.set_note_tags(note_id, tag_ids)
+

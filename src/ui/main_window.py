@@ -5,6 +5,7 @@ from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -23,6 +24,7 @@ from src.config.constants import APP_NAME, AUTOSAVE_INTERVAL_MS
 from src.controllers.note_controller import NoteController
 from src.controllers.settings_controller import SettingsController
 from src.models.note import Note
+from src.models.tag import Tag
 from src.utils.html_utils import first_line_from_plain_text
 
 COLOR_MAP: dict[str, str] = {
@@ -43,6 +45,8 @@ class MainWindow(QMainWindow):
         self._settings_controller: SettingsController | None = None
         self._current_note_id: int | None = None
         self._loading_note = False
+        self._updating_note_tags = False
+        self._tags: list[Tag] = []
 
         self._autosave_timer = QTimer(self)
         self._autosave_timer.setSingleShot(True)
@@ -50,10 +54,11 @@ class MainWindow(QMainWindow):
         self._autosave_timer.timeout.connect(self._save_current_note)
 
         self.setWindowTitle(APP_NAME)
-        self.resize(1080, 700)
+        self.resize(1200, 760)
         self._setup_ui()
         self._bind_events()
         self._bind_shortcuts()
+        self._refresh_tags()
         self._refresh_note_list()
 
     def set_settings_controller(self, settings_controller: SettingsController) -> None:
@@ -62,14 +67,11 @@ class MainWindow(QMainWindow):
     def _setup_ui(self) -> None:
         root = QWidget(self)
         self.setCentralWidget(root)
-
         layout = QVBoxLayout(root)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
         top_bar = QHBoxLayout()
-        top_bar.setSpacing(6)
-        self.title_label = QLabel("QuickNote V2")
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search title/content...")
         self.search_input.setFixedHeight(25)
@@ -79,8 +81,7 @@ class MainWindow(QMainWindow):
         self.delete_btn = QPushButton("Delete")
         for btn in (self.new_btn, self.archive_btn, self.delete_btn):
             btn.setFixedHeight(25)
-
-        top_bar.addWidget(self.title_label)
+        top_bar.addWidget(QLabel("QuickNote V2"))
         top_bar.addStretch(1)
         top_bar.addWidget(self.search_input, 1)
         top_bar.addWidget(self.show_archived_checkbox)
@@ -90,7 +91,6 @@ class MainWindow(QMainWindow):
         layout.addLayout(top_bar)
 
         control_bar = QHBoxLayout()
-        control_bar.setSpacing(6)
         self.color_combo = QComboBox()
         self.color_combo.addItems(list(COLOR_MAP.keys()))
         self.color_combo.setFixedHeight(25)
@@ -103,31 +103,77 @@ class MainWindow(QMainWindow):
         self.opacity_slider.setValue(95)
         self.opacity_slider.setFixedHeight(25)
         self.opacity_label = QLabel("Opacity: 95%")
-
         control_bar.addWidget(QLabel("Color"))
         control_bar.addWidget(self.color_combo)
         control_bar.addWidget(QLabel("Icon"))
         control_bar.addWidget(self.emoji_combo)
-        control_bar.addSpacing(10)
+        control_bar.addSpacing(12)
         control_bar.addWidget(self.pin_checkbox)
         control_bar.addWidget(self.opacity_label)
         control_bar.addWidget(self.opacity_slider, 1)
         layout.addLayout(control_bar)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.note_list = QListWidget()
-        self.note_list.setMinimumWidth(320)
-        self.note_editor = QTextEdit()
-        self.note_editor.setPlaceholderText("Select or create a note to start editing.")
-        splitter.addWidget(self.note_list)
-        splitter.addWidget(self.note_editor)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 7)
-        layout.addWidget(splitter, 1)
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        left_panel = self._build_left_panel()
+        center_panel = self._build_center_panel()
+        main_splitter.addWidget(left_panel)
+        main_splitter.addWidget(center_panel)
+        main_splitter.setStretchFactor(0, 2)
+        main_splitter.setStretchFactor(1, 5)
+        layout.addWidget(main_splitter, 1)
 
         self.status_label = QLabel("Ready")
         layout.addWidget(self.status_label)
         self._update_action_state()
+
+    def _build_left_panel(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        filter_group = QGroupBox("Tag Filter")
+        filter_layout = QVBoxLayout(filter_group)
+        self.tag_filter_list = QListWidget()
+        self.tag_filter_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        filter_layout.addWidget(self.tag_filter_list)
+
+        manage_group = QGroupBox("Tag Management")
+        manage_layout = QVBoxLayout(manage_group)
+        input_row = QHBoxLayout()
+        self.new_tag_input = QLineEdit()
+        self.new_tag_input.setPlaceholderText("New tag name...")
+        self.new_tag_input.setFixedHeight(25)
+        self.add_tag_btn = QPushButton("Add")
+        self.add_tag_btn.setFixedHeight(25)
+        input_row.addWidget(self.new_tag_input, 1)
+        input_row.addWidget(self.add_tag_btn)
+        manage_layout.addLayout(input_row)
+        self.delete_tag_btn = QPushButton("Delete Selected Filter Tags")
+        self.delete_tag_btn.setFixedHeight(25)
+        manage_layout.addWidget(self.delete_tag_btn)
+
+        note_group = QGroupBox("Current Note Tags")
+        note_layout = QVBoxLayout(note_group)
+        self.note_tag_list = QListWidget()
+        note_layout.addWidget(self.note_tag_list)
+
+        layout.addWidget(filter_group, 3)
+        layout.addWidget(manage_group, 1)
+        layout.addWidget(note_group, 3)
+        return container
+
+    def _build_center_panel(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.note_list = QListWidget()
+        self.note_editor = QTextEdit()
+        self.note_editor.setPlaceholderText("Select or create a note to start editing.")
+        layout.addWidget(self.note_list, 2)
+        layout.addWidget(self.note_editor, 5)
+        return container
 
     def _bind_events(self) -> None:
         self.new_btn.clicked.connect(self._on_create_note)
@@ -141,6 +187,10 @@ class MainWindow(QMainWindow):
         self.emoji_combo.currentTextChanged.connect(self._on_emoji_changed)
         self.pin_checkbox.toggled.connect(self._on_pin_toggled)
         self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
+        self.add_tag_btn.clicked.connect(self._on_add_tag)
+        self.delete_tag_btn.clicked.connect(self._on_delete_selected_tags)
+        self.tag_filter_list.itemSelectionChanged.connect(self._refresh_note_list)
+        self.note_tag_list.itemChanged.connect(self._on_note_tag_item_changed)
 
     def _bind_shortcuts(self) -> None:
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self._on_create_note)
@@ -161,6 +211,7 @@ class MainWindow(QMainWindow):
         self._current_note_id = None
         self.note_editor.clear()
         self._refresh_note_list()
+        self._refresh_note_tag_checks()
         self.status_label.setText("Archive status updated.")
 
     def _on_delete_note(self) -> None:
@@ -170,6 +221,7 @@ class MainWindow(QMainWindow):
         self._current_note_id = None
         self.note_editor.clear()
         self._refresh_note_list()
+        self._refresh_note_tag_checks()
         self.status_label.setText("Note deleted.")
 
     def _on_note_selected(
@@ -178,19 +230,19 @@ class MainWindow(QMainWindow):
         if current is None:
             self._current_note_id = None
             self._update_action_state()
+            self._refresh_note_tag_checks()
             return
-
         note_id = int(current.data(Qt.ItemDataRole.UserRole))
         note = self._note_controller.on_select_note(note_id)
         if note is None:
             return
-
         self._current_note_id = note.id
         self._loading_note = True
         self.note_editor.setHtml(note.content_html or "")
         self._set_combo_value(self.color_combo, note.color, "yellow")
         self._set_combo_value(self.emoji_combo, note.emoji_icon, "📝")
         self._loading_note = False
+        self._refresh_note_tag_checks()
         self._update_action_state()
 
     def _on_editor_changed(self) -> None:
@@ -218,14 +270,13 @@ class MainWindow(QMainWindow):
         self._current_note_id = None
         self.note_editor.clear()
         self._refresh_note_list()
+        self._refresh_note_tag_checks()
         self._update_action_state()
 
     def _on_color_changed(self, color_name: str) -> None:
         if self._loading_note or self._current_note_id is None:
             return
-        self._note_controller.on_update_note_appearance(
-            self._current_note_id, color=color_name
-        )
+        self._note_controller.on_update_note_appearance(self._current_note_id, color=color_name)
         self._refresh_note_list()
         self._select_note_in_list(self._current_note_id)
 
@@ -239,26 +290,101 @@ class MainWindow(QMainWindow):
         self._select_note_in_list(self._current_note_id)
 
     def _on_pin_toggled(self, enabled: bool) -> None:
-        if self._settings_controller is None:
-            return
-        self._settings_controller.on_toggle_pin(enabled)
+        if self._settings_controller is not None:
+            self._settings_controller.on_toggle_pin(enabled)
 
     def _on_opacity_changed(self, value: int) -> None:
-        alpha = value / 100
         self.opacity_label.setText(f"Opacity: {value}%")
         if self._settings_controller is not None:
-            self._settings_controller.on_change_transparency(alpha)
+            self._settings_controller.on_change_transparency(value / 100)
+
+    def _on_add_tag(self) -> None:
+        name = self.new_tag_input.text().strip()
+        if not name:
+            self.status_label.setText("Tag name cannot be empty.")
+            return
+        tag = self._note_controller.on_create_tag(name)
+        if tag is None:
+            self.status_label.setText("Tag already exists or invalid.")
+            return
+        self.new_tag_input.clear()
+        self._refresh_tags()
+        self.status_label.setText(f"Tag '{tag.name}' created.")
+
+    def _on_delete_selected_tags(self) -> None:
+        selected = self.tag_filter_list.selectedItems()
+        if not selected:
+            self.status_label.setText("Select tags from Tag Filter first.")
+            return
+        for item in selected:
+            tag_id = int(item.data(Qt.ItemDataRole.UserRole))
+            self._note_controller.on_delete_tag(tag_id)
+        self._refresh_tags()
+        self._refresh_note_list()
+        self._refresh_note_tag_checks()
+        self.status_label.setText("Selected tags deleted.")
+
+    def _on_note_tag_item_changed(self, _item: QListWidgetItem) -> None:
+        if self._updating_note_tags or self._current_note_id is None:
+            return
+        checked_ids: list[int] = []
+        for idx in range(self.note_tag_list.count()):
+            it = self.note_tag_list.item(idx)
+            if it.checkState() == Qt.CheckState.Checked:
+                checked_ids.append(int(it.data(Qt.ItemDataRole.UserRole)))
+        self._note_controller.on_set_note_tags(self._current_note_id, checked_ids)
+        self.status_label.setText("Note tags updated.")
+        self._refresh_note_list()
+        self._select_note_in_list(self._current_note_id)
+
+    def _refresh_tags(self) -> None:
+        selected_filter_ids = self._selected_filter_tag_ids()
+        self._tags = self._note_controller.list_tags()
+
+        self.tag_filter_list.blockSignals(True)
+        self.tag_filter_list.clear()
+        for tag in self._tags:
+            item = QListWidgetItem(tag.name)
+            item.setData(Qt.ItemDataRole.UserRole, tag.id)
+            item.setBackground(QColor(tag.color))
+            self.tag_filter_list.addItem(item)
+            if tag.id in selected_filter_ids:
+                item.setSelected(True)
+        self.tag_filter_list.blockSignals(False)
+        self._refresh_note_tag_checks()
+
+    def _refresh_note_tag_checks(self) -> None:
+        note_tag_ids = (
+            set(self._note_controller.get_note_tag_ids(self._current_note_id))
+            if self._current_note_id is not None
+            else set()
+        )
+        self._updating_note_tags = True
+        self.note_tag_list.clear()
+        for tag in self._tags:
+            item = QListWidgetItem(tag.name)
+            item.setData(Qt.ItemDataRole.UserRole, tag.id)
+            item.setFlags(
+                item.flags()
+                | Qt.ItemFlag.ItemIsUserCheckable
+                | Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+            )
+            item.setCheckState(
+                Qt.CheckState.Checked if tag.id in note_tag_ids else Qt.CheckState.Unchecked
+            )
+            item.setBackground(QColor(tag.color))
+            self.note_tag_list.addItem(item)
+        self.note_tag_list.setEnabled(self._current_note_id is not None)
+        self._updating_note_tags = False
 
     def _refresh_note_list(self, *_args) -> None:
         archived = self.show_archived_checkbox.isChecked()
         keyword = self.search_input.text().strip().lower()
-        notes = self._note_controller.list_notes(archived=archived)
-        if keyword:
-            notes = [
-                n
-                for n in notes
-                if keyword in n.title.lower() or keyword in n.plain_text.lower()
-            ]
+        tag_ids = self._selected_filter_tag_ids()
+        notes = self._note_controller.on_search(
+            keyword, archived=archived, tag_ids=tag_ids or None
+        )
 
         selected_id = self._current_note_id
         self.note_list.blockSignals(True)
@@ -278,6 +404,7 @@ class MainWindow(QMainWindow):
         if selected_id is not None and not self._select_note_in_list(selected_id):
             self._current_note_id = None
             self.note_editor.clear()
+            self._refresh_note_tag_checks()
         self._update_action_state()
 
     def _select_note_in_list(self, note_id: int) -> bool:
@@ -287,6 +414,12 @@ class MainWindow(QMainWindow):
                 self.note_list.setCurrentItem(item)
                 return True
         return False
+
+    def _selected_filter_tag_ids(self) -> list[int]:
+        return [
+            int(item.data(Qt.ItemDataRole.UserRole))
+            for item in self.tag_filter_list.selectedItems()
+        ]
 
     def _update_action_state(self) -> None:
         has_selection = self._current_note_id is not None
@@ -302,3 +435,4 @@ class MainWindow(QMainWindow):
     def _set_combo_value(combo: QComboBox, value: str, default: str) -> None:
         idx = combo.findText(value)
         combo.setCurrentText(default if idx < 0 else value)
+

@@ -10,6 +10,7 @@ from src.controllers.note_controller import NoteController
 from src.controllers.settings_controller import SettingsController
 from src.db.connection import DatabaseConnection
 from src.db.repositories.note_repo import NoteRepository
+from src.db.repositories.tag_repo import TagRepository
 from src.db.schema import init_schema
 from src.services.note_service import NoteService
 from src.services.search_service import SearchService
@@ -28,7 +29,8 @@ class QuickNoteApp:
         init_schema(conn)
 
         note_repo = NoteRepository(conn)
-        note_service = NoteService(note_repo)
+        tag_repo = TagRepository(conn)
+        note_service = NoteService(note_repo, tag_repo)
         search_service = SearchService(note_service)
         note_controller = NoteController(note_service, search_service)
 

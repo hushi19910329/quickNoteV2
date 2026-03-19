@@ -81,14 +81,33 @@ class NoteRepository:
         ).fetchone()
         return self._row_to_note(row) if row else None
 
-    def list_notes(self, archived: bool = False) -> list[Note]:
+    def list_notes(self, archived: bool = False, tag_ids: list[int] | None = None) -> list[Note]:
+        if not tag_ids:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM notes
+                WHERE is_deleted = 0 AND is_archived = ?
+                ORDER BY updated_at DESC
+                """,
+                (1 if archived else 0,),
+            ).fetchall()
+            return [self._row_to_note(row) for row in rows]
+
+        placeholders = ",".join("?" for _ in tag_ids)
+        params: list[object] = [1 if archived else 0, *tag_ids, len(set(tag_ids))]
         rows = self._conn.execute(
-            """
-            SELECT * FROM notes
-            WHERE is_deleted = 0 AND is_archived = ?
-            ORDER BY updated_at DESC
+            f"""
+            SELECT n.*
+            FROM notes n
+            JOIN note_tags nt ON n.id = nt.note_id
+            WHERE n.is_deleted = 0
+              AND n.is_archived = ?
+              AND nt.tag_id IN ({placeholders})
+            GROUP BY n.id
+            HAVING COUNT(DISTINCT nt.tag_id) = ?
+            ORDER BY n.updated_at DESC
             """,
-            (1 if archived else 0,),
+            params,
         ).fetchall()
         return [self._row_to_note(row) for row in rows]
 
@@ -121,3 +140,4 @@ class NoteRepository:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+

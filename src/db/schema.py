@@ -57,6 +57,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_notes_is_archived ON notes(is_archived, is_deleted);
         CREATE INDEX IF NOT EXISTS idx_notes_updated_at ON notes(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_note_tags_note ON note_tags(note_id, tag_id);
+        CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id, note_id);
         """
     )
     conn.commit()
