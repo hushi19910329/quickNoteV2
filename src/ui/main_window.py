@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -23,8 +25,10 @@ from PySide6.QtWidgets import (
 
 from src.config.constants import APP_NAME, AUTOSAVE_INTERVAL_MS
 from src.controllers.note_controller import NoteController
+from src.controllers.reminder_controller import ReminderController
 from src.controllers.settings_controller import SettingsController
 from src.models.tag import Tag
+from src.ui.widgets.reminder_dialog import ReminderDialog
 from src.utils.html_utils import first_line_from_plain_text
 
 COLOR_MAP: dict[str, str] = {
@@ -43,6 +47,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._note_controller = note_controller
         self._settings_controller: SettingsController | None = None
+        self._reminder_controller: ReminderController | None = None
         self._current_note_id: int | None = None
         self._loading_note = False
         self._updating_note_tags = False
@@ -66,7 +71,7 @@ class MainWindow(QMainWindow):
         self._dock_collapse_timer.timeout.connect(self._collapse_to_dock_if_needed)
 
         self.setWindowTitle(APP_NAME)
-        self.resize(1200, 760)
+        self.resize(1240, 780)
         self._setup_ui()
         self._bind_events()
         self._bind_shortcuts()
@@ -75,6 +80,10 @@ class MainWindow(QMainWindow):
 
     def set_settings_controller(self, settings_controller: SettingsController) -> None:
         self._settings_controller = settings_controller
+
+    def set_reminder_controller(self, reminder_controller: ReminderController) -> None:
+        self._reminder_controller = reminder_controller
+        self._reminder_controller.set_notify_callback(self._on_reminder_event)
 
     def _setup_ui(self) -> None:
         root = QWidget(self)
@@ -91,16 +100,28 @@ class MainWindow(QMainWindow):
         self.new_btn = QPushButton("New")
         self.archive_btn = QPushButton("Archive")
         self.delete_btn = QPushButton("Delete")
+        self.reminder_btn = QPushButton("Set Reminder")
+        self.clear_reminder_btn = QPushButton("Clear Reminder")
+        self.snooze_btn = QPushButton("Snooze")
+        self.snooze_combo = QComboBox()
+        self.snooze_combo.addItem("5 min", userData=5)
+        self.snooze_combo.addItem("15 min", userData=15)
+        self.snooze_combo.addItem("60 min", userData=60)
         self.collapse_btn = QPushButton("List Mode")
         self.dock_btn = QPushButton("Dock Right")
         for btn in (
             self.new_btn,
             self.archive_btn,
             self.delete_btn,
+            self.reminder_btn,
+            self.clear_reminder_btn,
+            self.snooze_btn,
             self.collapse_btn,
             self.dock_btn,
         ):
             btn.setFixedHeight(25)
+        self.snooze_combo.setFixedHeight(25)
+
         top_bar.addWidget(QLabel("QuickNote V2"))
         top_bar.addStretch(1)
         top_bar.addWidget(self.search_input, 1)
@@ -108,6 +129,10 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(self.new_btn)
         top_bar.addWidget(self.archive_btn)
         top_bar.addWidget(self.delete_btn)
+        top_bar.addWidget(self.reminder_btn)
+        top_bar.addWidget(self.clear_reminder_btn)
+        top_bar.addWidget(self.snooze_combo)
+        top_bar.addWidget(self.snooze_btn)
         top_bar.addWidget(self.collapse_btn)
         top_bar.addWidget(self.dock_btn)
         layout.addLayout(top_bar)
@@ -147,7 +172,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.main_splitter, 1)
 
         self.status_label = QLabel("Ready")
+        self.reminder_info_label = QLabel("Reminder: none")
         layout.addWidget(self.status_label)
+        layout.addWidget(self.reminder_info_label)
         self._update_action_state()
         self._apply_view_mode()
 
@@ -205,6 +232,9 @@ class MainWindow(QMainWindow):
         self.new_btn.clicked.connect(self._on_create_note)
         self.archive_btn.clicked.connect(self._on_toggle_archive)
         self.delete_btn.clicked.connect(self._on_delete_note)
+        self.reminder_btn.clicked.connect(self._on_set_reminder)
+        self.clear_reminder_btn.clicked.connect(self._on_clear_reminder)
+        self.snooze_btn.clicked.connect(self._on_snooze)
         self.collapse_btn.clicked.connect(self._on_toggle_collapsed_mode)
         self.dock_btn.clicked.connect(self._on_toggle_dock_mode)
 
@@ -228,12 +258,16 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Delete"), self, activated=self._on_delete_note)
         QShortcut(QKeySequence("Ctrl+E"), self, activated=self._on_toggle_collapsed_mode)
         QShortcut(QKeySequence("Ctrl+D"), self, activated=self._on_toggle_dock_mode)
+        QShortcut(QKeySequence("Ctrl+R"), self, activated=self._on_set_reminder)
 
     def _show_note_context_menu(self, pos: QPoint) -> None:
         menu = QMenu(self)
         menu.addAction("New Note", self._on_create_note)
         menu.addAction("Save", self._save_current_note)
         if self._current_note_id is not None:
+            menu.addAction("Set Reminder", self._on_set_reminder)
+            menu.addAction("Clear Reminder", self._on_clear_reminder)
+            menu.addAction("Snooze", self._on_snooze)
             menu.addAction(
                 "Restore" if self.show_archived_checkbox.isChecked() else "Archive",
                 self._on_toggle_archive,
@@ -250,6 +284,41 @@ class MainWindow(QMainWindow):
         )
         menu.exec(self.note_list.viewport().mapToGlobal(pos))
 
+    def _on_set_reminder(self) -> None:
+        if self._current_note_id is None or self._reminder_controller is None:
+            return
+        current = self._reminder_controller.get_note_reminder(self._current_note_id)
+        default_dt = None
+        repeat_rule = None
+        if current is not None:
+            default_dt = datetime.fromisoformat(str(current["remind_at"]))
+            repeat_rule = current["repeat_rule"]
+        dialog = ReminderDialog(self, default_dt=default_dt, repeat_rule=repeat_rule)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        remind_at, rule = dialog.get_values()
+        self._reminder_controller.on_set_reminder(self._current_note_id, remind_at, rule)
+        self.status_label.setText("Reminder saved.")
+        self._refresh_current_reminder_info()
+
+    def _on_clear_reminder(self) -> None:
+        if self._current_note_id is None or self._reminder_controller is None:
+            return
+        self._reminder_controller.on_clear_reminder(self._current_note_id)
+        self.status_label.setText("Reminder cleared.")
+        self._refresh_current_reminder_info()
+
+    def _on_snooze(self) -> None:
+        if self._current_note_id is None or self._reminder_controller is None:
+            return
+        minutes = int(self.snooze_combo.currentData())
+        ok = self._reminder_controller.on_snooze(self._current_note_id, minutes)
+        if ok:
+            self.status_label.setText(f"Snoozed {minutes} minutes.")
+        else:
+            self.status_label.setText("No reminder to snooze.")
+        self._refresh_current_reminder_info()
+
     def _on_create_note(self) -> None:
         note = self._note_controller.on_create_note()
         self._refresh_note_list()
@@ -265,6 +334,7 @@ class MainWindow(QMainWindow):
         self.note_editor.clear()
         self._refresh_note_list()
         self._refresh_note_tag_checks()
+        self._refresh_current_reminder_info()
         self.status_label.setText("Archive status updated.")
 
     def _on_delete_note(self) -> None:
@@ -275,6 +345,7 @@ class MainWindow(QMainWindow):
         self.note_editor.clear()
         self._refresh_note_list()
         self._refresh_note_tag_checks()
+        self._refresh_current_reminder_info()
         self.status_label.setText("Note deleted.")
 
     def _on_toggle_collapsed_mode(self) -> None:
@@ -296,7 +367,9 @@ class MainWindow(QMainWindow):
         self._apply_view_mode()
         self._update_dock_button_text()
         self.status_label.setText(
-            "Dock mode enabled. Hover to expand." if self._dock_mode_enabled else "Dock mode disabled."
+            "Dock mode enabled. Hover to expand."
+            if self._dock_mode_enabled
+            else "Dock mode disabled."
         )
 
     def _on_note_selected(
@@ -306,6 +379,7 @@ class MainWindow(QMainWindow):
             self._current_note_id = None
             self._update_action_state()
             self._refresh_note_tag_checks()
+            self._refresh_current_reminder_info()
             return
         note_id = int(current.data(Qt.ItemDataRole.UserRole))
         note = self._note_controller.on_select_note(note_id)
@@ -318,6 +392,7 @@ class MainWindow(QMainWindow):
         self._set_combo_value(self.emoji_combo, note.emoji_icon, "📝")
         self._loading_note = False
         self._refresh_note_tag_checks()
+        self._refresh_current_reminder_info()
         self._update_action_state()
 
     def _on_editor_changed(self) -> None:
@@ -346,6 +421,7 @@ class MainWindow(QMainWindow):
         self.note_editor.clear()
         self._refresh_note_list()
         self._refresh_note_tag_checks()
+        self._refresh_current_reminder_info()
         self._update_action_state()
 
     def _on_color_changed(self, color_name: str) -> None:
@@ -412,6 +488,10 @@ class MainWindow(QMainWindow):
         self._refresh_note_list()
         self._select_note_in_list(self._current_note_id)
 
+    def _on_reminder_event(self, message: str) -> None:
+        self.status_label.setText(message)
+        self._refresh_current_reminder_info()
+
     def _refresh_tags(self) -> None:
         selected_filter_ids = self._selected_filter_tag_ids()
         self._tags = self._note_controller.list_tags()
@@ -453,6 +533,20 @@ class MainWindow(QMainWindow):
         self.note_tag_list.setEnabled(self._current_note_id is not None)
         self._updating_note_tags = False
 
+    def _refresh_current_reminder_info(self) -> None:
+        if self._current_note_id is None or self._reminder_controller is None:
+            self.reminder_info_label.setText("Reminder: none")
+            return
+        row = self._reminder_controller.get_note_reminder(self._current_note_id)
+        if row is None or int(row["is_enabled"]) != 1:
+            self.reminder_info_label.setText("Reminder: none")
+            return
+        remind_at = datetime.fromisoformat(str(row["remind_at"]))
+        repeat_rule = row["repeat_rule"] or "one-time"
+        self.reminder_info_label.setText(
+            f"Reminder: {remind_at.strftime('%Y-%m-%d %H:%M')} ({repeat_rule})"
+        )
+
     def _refresh_note_list(self, *_args) -> None:
         archived = self.show_archived_checkbox.isChecked()
         keyword = self.search_input.text().strip().lower()
@@ -480,6 +574,7 @@ class MainWindow(QMainWindow):
             self._current_note_id = None
             self.note_editor.clear()
             self._refresh_note_tag_checks()
+            self._refresh_current_reminder_info()
         self._update_action_state()
 
     def _select_note_in_list(self, note_id: int) -> bool:
@@ -502,6 +597,10 @@ class MainWindow(QMainWindow):
         self.archive_btn.setEnabled(has_selection)
         self.color_combo.setEnabled(has_selection)
         self.emoji_combo.setEnabled(has_selection)
+        self.reminder_btn.setEnabled(has_selection)
+        self.clear_reminder_btn.setEnabled(has_selection)
+        self.snooze_combo.setEnabled(has_selection)
+        self.snooze_btn.setEnabled(has_selection)
         self.archive_btn.setText(
             "Restore" if self.show_archived_checkbox.isChecked() else "Archive"
         )
