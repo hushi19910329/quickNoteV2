@@ -7,11 +7,13 @@ from PySide6.QtWidgets import QApplication
 
 from src.config.constants import APP_DATA_DIR, APP_NAME, DB_PATH
 from src.controllers.note_controller import NoteController
+from src.controllers.settings_controller import SettingsController
 from src.db.connection import DatabaseConnection
 from src.db.repositories.note_repo import NoteRepository
 from src.db.schema import init_schema
 from src.services.note_service import NoteService
 from src.services.search_service import SearchService
+from src.services.window_service import WindowService
 from src.ui.main_window import MainWindow
 
 
@@ -34,7 +36,10 @@ class QuickNoteApp:
         self._qt_app.setApplicationName(APP_NAME)
         self._qt_app.aboutToQuit.connect(self._db.close)
         self._apply_style()
-        return MainWindow(note_controller)
+        window = MainWindow(note_controller)
+        settings_controller = SettingsController(WindowService(window))
+        window.set_settings_controller(settings_controller)
+        return window
 
     def run(self) -> int:
         window = self.bootstrap()
@@ -62,4 +67,3 @@ def _read_text_if_exists(path: Path) -> str:
 
 def _style_path() -> Path:
     return Path(__file__).parent / "ui" / "styles" / "light_theme.qss"
-

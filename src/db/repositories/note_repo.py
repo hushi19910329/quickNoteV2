@@ -92,6 +92,13 @@ class NoteRepository:
         ).fetchall()
         return [self._row_to_note(row) for row in rows]
 
+    def set_archived(self, note_id: int, archived: bool) -> None:
+        self._conn.execute(
+            "UPDATE notes SET is_archived = ?, updated_at = ? WHERE id = ? AND is_deleted = 0",
+            (1 if archived else 0, _now_iso(), note_id),
+        )
+        self._conn.commit()
+
     def soft_delete_note(self, note_id: int) -> None:
         self._conn.execute(
             "UPDATE notes SET is_deleted = 1, updated_at = ? WHERE id = ?",
@@ -114,4 +121,3 @@ class NoteRepository:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
-
