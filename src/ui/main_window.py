@@ -16,9 +16,9 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QPushButton,
+    QFileDialog,
     QSlider,
     QSplitter,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -28,6 +28,7 @@ from src.controllers.note_controller import NoteController
 from src.controllers.reminder_controller import ReminderController
 from src.controllers.settings_controller import SettingsController
 from src.models.tag import Tag
+from src.ui.widgets.note_editor_panel import NoteEditorPanel
 from src.ui.widgets.reminder_dialog import ReminderDialog
 from src.utils.html_utils import first_line_from_plain_text
 
@@ -100,6 +101,7 @@ class MainWindow(QMainWindow):
         self.new_btn = QPushButton("New")
         self.archive_btn = QPushButton("Archive")
         self.delete_btn = QPushButton("Delete")
+        self.insert_image_btn = QPushButton("Insert Image")
         self.reminder_btn = QPushButton("Set Reminder")
         self.clear_reminder_btn = QPushButton("Clear Reminder")
         self.snooze_btn = QPushButton("Snooze")
@@ -113,6 +115,7 @@ class MainWindow(QMainWindow):
             self.new_btn,
             self.archive_btn,
             self.delete_btn,
+            self.insert_image_btn,
             self.reminder_btn,
             self.clear_reminder_btn,
             self.snooze_btn,
@@ -129,6 +132,7 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(self.new_btn)
         top_bar.addWidget(self.archive_btn)
         top_bar.addWidget(self.delete_btn)
+        top_bar.addWidget(self.insert_image_btn)
         top_bar.addWidget(self.reminder_btn)
         top_bar.addWidget(self.clear_reminder_btn)
         top_bar.addWidget(self.snooze_combo)
@@ -222,7 +226,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
         self.note_list = QListWidget()
         self.note_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.note_editor = QTextEdit()
+        self.note_editor = NoteEditorPanel()
         self.note_editor.setPlaceholderText("Select or create a note to start editing.")
         layout.addWidget(self.note_list, 2)
         layout.addWidget(self.note_editor, 5)
@@ -232,6 +236,7 @@ class MainWindow(QMainWindow):
         self.new_btn.clicked.connect(self._on_create_note)
         self.archive_btn.clicked.connect(self._on_toggle_archive)
         self.delete_btn.clicked.connect(self._on_delete_note)
+        self.insert_image_btn.clicked.connect(self._on_insert_image)
         self.reminder_btn.clicked.connect(self._on_set_reminder)
         self.clear_reminder_btn.clicked.connect(self._on_clear_reminder)
         self.snooze_btn.clicked.connect(self._on_snooze)
@@ -265,6 +270,7 @@ class MainWindow(QMainWindow):
         menu.addAction("New Note", self._on_create_note)
         menu.addAction("Save", self._save_current_note)
         if self._current_note_id is not None:
+            menu.addAction("Insert Image", self._on_insert_image)
             menu.addAction("Set Reminder", self._on_set_reminder)
             menu.addAction("Clear Reminder", self._on_clear_reminder)
             menu.addAction("Snooze", self._on_snooze)
@@ -300,6 +306,25 @@ class MainWindow(QMainWindow):
         self._reminder_controller.on_set_reminder(self._current_note_id, remind_at, rule)
         self.status_label.setText("Reminder saved.")
         self._refresh_current_reminder_info()
+
+    def _on_insert_image(self) -> None:
+        if self._current_note_id is None:
+            self.status_label.setText("Select a note first.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Insert Image",
+            "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp)",
+        )
+        if not path:
+            return
+        ok = self.note_editor.insert_image_from_path(path)
+        if ok:
+            self.status_label.setText("Image inserted.")
+            self._autosave_timer.start()
+        else:
+            self.status_label.setText("Failed to insert image.")
 
     def _on_clear_reminder(self) -> None:
         if self._current_note_id is None or self._reminder_controller is None:
@@ -594,6 +619,7 @@ class MainWindow(QMainWindow):
     def _update_action_state(self) -> None:
         has_selection = self._current_note_id is not None
         self.delete_btn.setEnabled(has_selection)
+        self.insert_image_btn.setEnabled(has_selection)
         self.archive_btn.setEnabled(has_selection)
         self.color_combo.setEnabled(has_selection)
         self.emoji_combo.setEnabled(has_selection)
@@ -660,4 +686,3 @@ class MainWindow(QMainWindow):
     def _set_combo_value(combo: QComboBox, value: str, default: str) -> None:
         idx = combo.findText(value)
         combo.setCurrentText(default if idx < 0 else value)
-

@@ -5,5 +5,5 @@ APP_NAME = "QuickNote V2"
 APP_DATA_DIR = Path("data")
 DB_PATH = APP_DATA_DIR / "quicknote.db"
 SETTINGS_PATH = APP_DATA_DIR / "settings.json"
+IMAGE_DIR = APP_DATA_DIR / "images"
 AUTOSAVE_INTERVAL_MS = 800
-
