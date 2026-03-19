@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QPushButton,
     QSlider,
     QSplitter,
@@ -23,7 +24,6 @@ from PySide6.QtWidgets import (
 from src.config.constants import APP_NAME, AUTOSAVE_INTERVAL_MS
 from src.controllers.note_controller import NoteController
 from src.controllers.settings_controller import SettingsController
-from src.models.note import Note
 from src.models.tag import Tag
 from src.utils.html_utils import first_line_from_plain_text
 
@@ -48,10 +48,22 @@ class MainWindow(QMainWindow):
         self._updating_note_tags = False
         self._tags: list[Tag] = []
 
+        self._manual_collapsed = False
+        self._dock_mode_enabled = False
+        self._dock_collapsed = False
+        self._dock_collapsed_width = 72
+        self._dock_expanded_width = 520
+        self._dock_internal_move = False
+
         self._autosave_timer = QTimer(self)
         self._autosave_timer.setSingleShot(True)
         self._autosave_timer.setInterval(AUTOSAVE_INTERVAL_MS)
         self._autosave_timer.timeout.connect(self._save_current_note)
+
+        self._dock_collapse_timer = QTimer(self)
+        self._dock_collapse_timer.setSingleShot(True)
+        self._dock_collapse_timer.setInterval(550)
+        self._dock_collapse_timer.timeout.connect(self._collapse_to_dock_if_needed)
 
         self.setWindowTitle(APP_NAME)
         self.resize(1200, 760)
@@ -79,7 +91,15 @@ class MainWindow(QMainWindow):
         self.new_btn = QPushButton("New")
         self.archive_btn = QPushButton("Archive")
         self.delete_btn = QPushButton("Delete")
-        for btn in (self.new_btn, self.archive_btn, self.delete_btn):
+        self.collapse_btn = QPushButton("List Mode")
+        self.dock_btn = QPushButton("Dock Right")
+        for btn in (
+            self.new_btn,
+            self.archive_btn,
+            self.delete_btn,
+            self.collapse_btn,
+            self.dock_btn,
+        ):
             btn.setFixedHeight(25)
         top_bar.addWidget(QLabel("QuickNote V2"))
         top_bar.addStretch(1)
@@ -88,9 +108,13 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(self.new_btn)
         top_bar.addWidget(self.archive_btn)
         top_bar.addWidget(self.delete_btn)
+        top_bar.addWidget(self.collapse_btn)
+        top_bar.addWidget(self.dock_btn)
         layout.addLayout(top_bar)
 
-        control_bar = QHBoxLayout()
+        self.control_bar_widget = QWidget()
+        control_bar = QHBoxLayout(self.control_bar_widget)
+        control_bar.setContentsMargins(0, 0, 0, 0)
         self.color_combo = QComboBox()
         self.color_combo.addItems(list(COLOR_MAP.keys()))
         self.color_combo.setFixedHeight(25)
@@ -111,20 +135,21 @@ class MainWindow(QMainWindow):
         control_bar.addWidget(self.pin_checkbox)
         control_bar.addWidget(self.opacity_label)
         control_bar.addWidget(self.opacity_slider, 1)
-        layout.addLayout(control_bar)
+        layout.addWidget(self.control_bar_widget)
 
-        main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        left_panel = self._build_left_panel()
-        center_panel = self._build_center_panel()
-        main_splitter.addWidget(left_panel)
-        main_splitter.addWidget(center_panel)
-        main_splitter.setStretchFactor(0, 2)
-        main_splitter.setStretchFactor(1, 5)
-        layout.addWidget(main_splitter, 1)
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.left_panel_widget = self._build_left_panel()
+        self.center_panel_widget = self._build_center_panel()
+        self.main_splitter.addWidget(self.left_panel_widget)
+        self.main_splitter.addWidget(self.center_panel_widget)
+        self.main_splitter.setStretchFactor(0, 2)
+        self.main_splitter.setStretchFactor(1, 5)
+        layout.addWidget(self.main_splitter, 1)
 
         self.status_label = QLabel("Ready")
         layout.addWidget(self.status_label)
         self._update_action_state()
+        self._apply_view_mode()
 
     def _build_left_panel(self) -> QWidget:
         container = QWidget()
@@ -169,6 +194,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
         self.note_list = QListWidget()
+        self.note_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.note_editor = QTextEdit()
         self.note_editor.setPlaceholderText("Select or create a note to start editing.")
         layout.addWidget(self.note_list, 2)
@@ -179,7 +205,11 @@ class MainWindow(QMainWindow):
         self.new_btn.clicked.connect(self._on_create_note)
         self.archive_btn.clicked.connect(self._on_toggle_archive)
         self.delete_btn.clicked.connect(self._on_delete_note)
+        self.collapse_btn.clicked.connect(self._on_toggle_collapsed_mode)
+        self.dock_btn.clicked.connect(self._on_toggle_dock_mode)
+
         self.note_list.currentItemChanged.connect(self._on_note_selected)
+        self.note_list.customContextMenuRequested.connect(self._show_note_context_menu)
         self.note_editor.textChanged.connect(self._on_editor_changed)
         self.search_input.textChanged.connect(self._refresh_note_list)
         self.show_archived_checkbox.stateChanged.connect(self._on_archived_filter_changed)
@@ -196,6 +226,29 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self._on_create_note)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self._save_current_note)
         QShortcut(QKeySequence("Delete"), self, activated=self._on_delete_note)
+        QShortcut(QKeySequence("Ctrl+E"), self, activated=self._on_toggle_collapsed_mode)
+        QShortcut(QKeySequence("Ctrl+D"), self, activated=self._on_toggle_dock_mode)
+
+    def _show_note_context_menu(self, pos: QPoint) -> None:
+        menu = QMenu(self)
+        menu.addAction("New Note", self._on_create_note)
+        menu.addAction("Save", self._save_current_note)
+        if self._current_note_id is not None:
+            menu.addAction(
+                "Restore" if self.show_archived_checkbox.isChecked() else "Archive",
+                self._on_toggle_archive,
+            )
+            menu.addAction("Delete", self._on_delete_note)
+        menu.addSeparator()
+        menu.addAction(
+            "Exit List Mode" if self._manual_collapsed else "Enter List Mode",
+            self._on_toggle_collapsed_mode,
+        )
+        menu.addAction(
+            "Undock Right" if self._dock_mode_enabled else "Dock Right",
+            self._on_toggle_dock_mode,
+        )
+        menu.exec(self.note_list.viewport().mapToGlobal(pos))
 
     def _on_create_note(self) -> None:
         note = self._note_controller.on_create_note()
@@ -223,6 +276,28 @@ class MainWindow(QMainWindow):
         self._refresh_note_list()
         self._refresh_note_tag_checks()
         self.status_label.setText("Note deleted.")
+
+    def _on_toggle_collapsed_mode(self) -> None:
+        self._manual_collapsed = not self._manual_collapsed
+        self._apply_view_mode()
+        self.status_label.setText(
+            "List mode enabled." if self._manual_collapsed else "List mode disabled."
+        )
+
+    def _on_toggle_dock_mode(self) -> None:
+        self._dock_mode_enabled = not self._dock_mode_enabled
+        if self._dock_mode_enabled:
+            self._dock_expanded_width = max(480, self.width())
+            self._dock_collapsed = True
+            self._snap_to_right_edge(width=self._dock_collapsed_width)
+        else:
+            self._dock_collapsed = False
+            self._snap_to_right_edge(width=max(720, self._dock_expanded_width))
+        self._apply_view_mode()
+        self._update_dock_button_text()
+        self.status_label.setText(
+            "Dock mode enabled. Hover to expand." if self._dock_mode_enabled else "Dock mode disabled."
+        )
 
     def _on_note_selected(
         self, current: QListWidgetItem | None, _previous: QListWidgetItem | None
@@ -430,6 +505,57 @@ class MainWindow(QMainWindow):
         self.archive_btn.setText(
             "Restore" if self.show_archived_checkbox.isChecked() else "Archive"
         )
+
+    def _update_dock_button_text(self) -> None:
+        self.dock_btn.setText("Undock" if self._dock_mode_enabled else "Dock Right")
+
+    def _apply_view_mode(self) -> None:
+        effective_collapsed = self._manual_collapsed or self._dock_collapsed
+        self.left_panel_widget.setVisible(not effective_collapsed)
+        self.note_editor.setVisible(not effective_collapsed)
+        self.control_bar_widget.setVisible(not effective_collapsed)
+        self.collapse_btn.setText("Edit Mode" if self._manual_collapsed else "List Mode")
+
+    def enterEvent(self, event) -> None:  # type: ignore[override]
+        super().enterEvent(event)
+        if self._dock_mode_enabled:
+            self._dock_collapse_timer.stop()
+            if self._dock_collapsed:
+                self._dock_collapsed = False
+                self._apply_view_mode()
+                self._snap_to_right_edge(width=self._dock_expanded_width)
+
+    def leaveEvent(self, event) -> None:  # type: ignore[override]
+        super().leaveEvent(event)
+        if self._dock_mode_enabled:
+            self._dock_collapse_timer.start()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        if self._dock_mode_enabled and not self._dock_internal_move:
+            self._snap_to_right_edge(width=self.width())
+
+    def _collapse_to_dock_if_needed(self) -> None:
+        if not self._dock_mode_enabled or self.underMouse():
+            return
+        self._dock_collapsed = True
+        self._apply_view_mode()
+        self._snap_to_right_edge(width=self._dock_collapsed_width)
+
+    def _snap_to_right_edge(self, width: int) -> None:
+        screen = self.screen()
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        new_width = max(56, min(width, available.width()))
+        new_height = self.height()
+        if new_height > available.height():
+            new_height = available.height()
+        x = available.right() - new_width + 1
+        y = min(max(self.y(), available.top()), available.bottom() - new_height + 1)
+        self._dock_internal_move = True
+        self.setGeometry(x, y, new_width, new_height)
+        self._dock_internal_move = False
 
     @staticmethod
     def _set_combo_value(combo: QComboBox, value: str, default: str) -> None:
